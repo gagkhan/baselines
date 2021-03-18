@@ -2,6 +2,7 @@
 An interface for asynchronous vectorized environments.
 """
 
+import os
 import multiprocessing as mp
 import numpy as np
 from .vec_env import VecEnv, CloudpickleWrapper, clear_mpi_env_vars
@@ -44,12 +45,16 @@ class ShmemVecEnv(VecEnv):
             for _ in env_fns]
         self.parent_pipes = []
         self.procs = []
+        env_vars = {'NENV':str(len(env_fns))}
         with clear_mpi_env_vars():
+            env_id = 0
             for env_fn, obs_buf in zip(env_fns, self.obs_bufs):
                 wrapped_fn = CloudpickleWrapper(env_fn)
                 parent_pipe, child_pipe = ctx.Pipe()
+                env_vars['ENV_ID'] = str(env_id)
                 proc = ctx.Process(target=_subproc_worker,
-                            args=(child_pipe, parent_pipe, wrapped_fn, obs_buf, self.obs_shapes, self.obs_dtypes, self.obs_keys))
+                            args=(child_pipe, parent_pipe, wrapped_fn, obs_buf, self.obs_shapes, self.obs_dtypes, self.obs_keys, env_vars))
+                env_id += 1
                 proc.daemon = True
                 self.procs.append(proc)
                 self.parent_pipes.append(parent_pipe)
@@ -104,11 +109,15 @@ class ShmemVecEnv(VecEnv):
         return dict_to_obs(result)
 
 
-def _subproc_worker(pipe, parent_pipe, env_fn_wrapper, obs_bufs, obs_shapes, obs_dtypes, keys):
+def _subproc_worker(pipe, parent_pipe, env_fn_wrapper, obs_bufs, obs_shapes, obs_dtypes, keys, env_vars):
     """
     Control a single environment instance using IPC and
     shared memory.
     """
+
+    for var, val in env_vars.items():
+        os.environ[var] = val
+
     def _write_obs(maybe_dict_obs):
         flatdict = obs_to_dict(maybe_dict_obs)
         for k in keys:
